@@ -92,6 +92,8 @@ def llama_chat(llama_model):
         user_content = 'Your response is incorrect. Explicitly identify incorrect statements, and correct them.'
         user_msg = {'role': 'user', 'content': user_content}
         full_dialog.append(user_msg)
+        print('[%s You] %s' % (iter_idx, user_content))
+        print('------------------------------------------------------------\n')
 
     out_str = '\n'.join(['%s:%s' % (msg['role'], msg['content']) for msg in full_dialog])
     with open('controversial_conversation_%s.txt' % datetime.strftime(datetime.now(), '%Y%m%d%H%M%S'), 'w+') as out_fd:
