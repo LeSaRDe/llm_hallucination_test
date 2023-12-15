@@ -13,11 +13,13 @@ from generation import Llama
 
 g_llama_model_path = '/home/fmeng/workspace/llama_models/llama-2-7b-chat'
 g_tokenizer_path = '/home/fmeng/workspace/llama_models/tokenizer.model'
-g_max_seq_len = 4096
+g_max_seq_len = 2048
 g_top_p = 0.9
 g_max_gen_len = None
 g_max_batch_size = 4
 g_temperature = 0.6
+
+g_contro_prompt = """Your last response includes incorrect information. Explicitly identify incorrect statements, and correct them."""
 
 
 def set_env_vars():
@@ -78,6 +80,9 @@ def llama_chat(llama_model):
             temperature=g_temperature,
             top_p=g_top_p,
         )
+        if response is None:
+            logging.error('[llama_chat] Invalid response occurred. Quit.')
+            break
         response_content = response[0]['generation']['content']
         logging.debug('[llama_chat] Iter: %s, Elapse: %s' % (iter_idx, time.time() - start_t))
 
@@ -89,13 +94,16 @@ def llama_chat(llama_model):
         full_dialog.append(llama_msg)
         iter_idx += 1
 
-        user_content = 'Your response is incorrect. Explicitly identify incorrect statements, and correct them.'
+        user_content = g_contro_prompt
         user_msg = {'role': 'user', 'content': user_content}
         full_dialog.append(user_msg)
         print('[%s You] %s' % (iter_idx, user_content))
         print('------------------------------------------------------------\n')
 
-    out_str = '\n'.join(['%s:%s' % (msg['role'], msg['content']) for msg in full_dialog])
+    out_str = '\n\n'.join(['%s:%s:%s'
+                           % (int((idx-1)/2) if idx % 2 != 0 and idx > 0 else int(idx/2),
+                              msg['role'],
+                              msg['content']) for idx, msg in enumerate(full_dialog)])
     with open('controversial_conversation_%s.txt' % datetime.strftime(datetime.now(), '%Y%m%d%H%M%S'), 'w+') as out_fd:
         out_fd.write(out_str)
 
