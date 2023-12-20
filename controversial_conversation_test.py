@@ -171,6 +171,10 @@ if __name__ == '__main__':
     # llama_model = load_llama_model()
     llama_model = build_llama_model('llama-2-13b-chat')
     print(llama_model)
+
+    torch.set_num_interop_threads(os.cpu_count())  # Inter-op parallelism
+    torch.set_num_threads(os.cpu_count())  # Intra-op parallelism
+
     # Chat completion
     llama_chat(llama_model)
 
