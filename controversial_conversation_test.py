@@ -23,8 +23,6 @@ from fairscale.nn.model_parallel.initialize import (
 
 
 g_llama2_model_dir = '/home/fmeng/workspace/llama_models'
-
-# g_llama_model_path = '/home/fmeng/workspace/llama_models/llama-2-13b-chat'
 g_tokenizer_path = '/home/fmeng/workspace/llama_models/tokenizer.model'
 g_max_seq_len = 2048
 g_top_p = 0.9
@@ -74,13 +72,18 @@ def build_llama_model(model_id):
     model = Transformer(model_args)
     state_dict = model.state_dict()
 
-    if model_id == 'llama-2-13b-chat':
+    if model_id == 'llama-2-13b-chat' or model_id == 'llama-2-13b':
         num_chkpt = 2
-        l_chkpt = []
-        for i in range(num_chkpt):
-            chkpt_i = torch.load(os.path.join(g_llama2_model_dir, model_id, 'consolidated.0%s.pth' % i),
-                                 map_location="cpu")
-            l_chkpt.append(chkpt_i)
+    elif model_id == 'llama-2-7b-chat' or model_id == 'llama-2-7b':
+        num_chkpt = 1
+    elif model_id == 'llama-2-70b-chat' or model_id == 'llama-2-70b':
+        num_chkpt = 8
+
+    l_chkpt = []
+    for i in range(num_chkpt):
+        chkpt_i = torch.load(os.path.join(g_llama2_model_dir, model_id, 'consolidated.0%s.pth' % i),
+                             map_location="cpu")
+        l_chkpt.append(chkpt_i)
 
     full_state_dict = OrderedDict.fromkeys(state_dict.keys())
     for weight_key in state_dict:
@@ -106,13 +109,6 @@ def llama_chat(llama_model):
 
     if os.path.exists('TERM'):
         os.remove('TERM')
-
-    # sys_msg = {
-    #     "role": "system",
-    #     "content": "Be rigorous and honest on every sentence in responses. Always keep consistency and coherence in the entire dialog. Always explain why if you detect inconsistency or incoherence in the dialog. If you do not know the answer to a question, do not output false information."
-    # }
-
-
 
     print('You will start the conversation.\n')
 
@@ -165,13 +161,40 @@ def llama_chat(llama_model):
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
+
+    # Model choice
+    model_choice = input('Please choose the model to be used:\n'
+                     '[1] llama-2-7b-chat\n'
+                     '[2] llama-2-7b\n'
+                     '[3] llama-2-13b-chat\n'
+                     '[4] llama-2-13b\n'
+                     '[5] llama-2-70b-chat\n'
+                     '[6] llama-2-70b\n'
+                     'Your choice: ')
+
+    model_choice = int(model_choice)
+    if model_choice == 1:
+        model_id = 'llama-2-7b-chat'
+    elif model_choice == 2:
+        model_id = 'llama-2-7b'
+    elif model_choice == 3:
+        model_id = 'llama-2-13b-chat'
+    elif model_choice == 4:
+        model_id = 'llama-2-13b'
+    elif model_choice == 5:
+        model_id = 'llama-2-70b-chat'
+    elif model_choice == 6:
+        model_id = 'llama-2-70b'
+    else:
+        logging.error('Your choice is not valid.')
+        sys.exit(-1)
+
     # Force to use CPU
     set_env_vars()
     # Retrieve Llama model
-    # llama_model = load_llama_model()
-    llama_model = build_llama_model('llama-2-13b-chat')
-    print(llama_model)
+    llama_model = build_llama_model(model_id)
 
+    # Activate full threading
     torch.set_num_interop_threads(os.cpu_count())  # Inter-op parallelism
     torch.set_num_threads(os.cpu_count())  # Intra-op parallelism
 
