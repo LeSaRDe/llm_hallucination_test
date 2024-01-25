@@ -506,8 +506,14 @@ class Transformer(nn.Module):
                 mask
             ]).type_as(h)
 
+        # [LeSaRDe Change Begins] Track Transformer behaviors
+        # The first element is the embedding of the prompt, followed by transformed embeddings from Transformer Block.
+        l_h = [h]
+        # [LeSaRDe Change Ends]
+
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
+            l_h.append(h)
         h = self.norm(h)
         output = self.output(h).float()
-        return output
+        return output, l_h

@@ -7,6 +7,9 @@ import sys
 import time
 from pathlib import Path
 from typing import List, Literal, Optional, Tuple, TypedDict
+# [LeSaRDe Change Begins]
+import logging
+# [LeSaRDe Change Ends]
 
 import torch
 import torch.nn.functional as F
@@ -111,9 +114,11 @@ class Llama:
         start_time = time.time()
         checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
         assert len(checkpoints) > 0, f"no checkpoint files found in {ckpt_dir}"
-        assert model_parallel_size == len(
-            checkpoints
-        ), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {model_parallel_size}"
+        # [LeSaRDe Change Begins] GPU -> CPU
+        # assert model_parallel_size == len(
+        #     checkpoints
+        # ), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {model_parallel_size}"
+        # [LeSaRDe Change Ends]
         ckpt_path = checkpoints[get_model_parallel_rank()]
         checkpoint = torch.load(ckpt_path, map_location="cpu")
         with open(Path(ckpt_dir) / "params.json", "r") as f:
@@ -149,7 +154,10 @@ class Llama:
         top_p: float = 0.9,
         logprobs: bool = False,
         echo: bool = False,
-    ) -> Tuple[List[List[int]], Optional[List[List[float]]]]:
+    # [LeSaRDe Change Begins] Track Transformer behaviors
+    # ) -> Tuple[List[List[int]], Optional[List[List[float]]]]:
+    ) -> Tuple[List[List[int]], Optional[List[List[float]]], List[List[float]]]:
+    # [LeSaRDe Change Ends]
         """
         Generate text sequences based on provided prompts using the language generation model.
 
@@ -197,8 +205,17 @@ class Llama:
         eos_reached = torch.tensor([False] * bsz, device="cpu")
         # [LeSaRDe Change Ends]
         input_text_mask = tokens != pad_id
+        # [LeSaRDe Change Begins] Track Transformer behaviors
+        l_h_seq = []
+        # [LeSaRDe Change Ends]
         if min_prompt_len == total_len:
-            logits = self.model.forward(tokens, prev_pos)
+            # [LeSaRDe Change Begins] Track Transformer behaviors
+            logging.error('[Llama:generate] min_prompt_len = total_len. min_prompt_len = %s, total_len = %s'
+                          % (min_prompt_len, total_len))
+            # logits = self.model.forward(tokens, prev_pos)
+            logits, l_h = self.model.forward(tokens, prev_pos)
+            l_h_seq.append(l_h)
+            # [LeSaRDe Change Ends]
             token_logprobs = -F.cross_entropy(
                 input=logits.transpose(1, 2),
                 target=tokens,
@@ -207,7 +224,11 @@ class Llama:
             )
 
         for cur_pos in range(min_prompt_len, total_len):
-            logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+            # [LeSaRDe Change Begins] Track Transformer behaviors
+            # logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+            logits, l_h = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+            l_h_seq.append(l_h)
+            # [LeSaRDe Change Ends]
             if temperature > 0:
                 probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
                 next_token = sample_top_p(probs, top_p)
@@ -251,7 +272,10 @@ class Llama:
                 probs = probs[:eos_idx] if logprobs else None
             out_tokens.append(toks)
             out_logprobs.append(probs)
-        return (out_tokens, out_logprobs if logprobs else None)
+        # [LeSaRDe Change Begins] Track Transformer behaviors
+        # return (out_tokens, out_logprobs if logprobs else None)
+        return (out_tokens, out_logprobs if logprobs else None, l_h_seq)
+        # [LeSaRDe Change Begins]
 
     def text_completion(
         self,
@@ -261,7 +285,10 @@ class Llama:
         max_gen_len: Optional[int] = None,
         logprobs: bool = False,
         echo: bool = False,
-    ) -> List[CompletionPrediction]:
+    # [LeSaRDe Change Begins] Track Transformer behaviors
+    # ) -> List[CompletionPrediction]:
+    ) -> Tuple[List[CompletionPrediction], List[List[float]]]:
+    # [LeSaRDe Change Begins]
         """
         Perform text completion for a list of prompts using the language generation model.
 
@@ -285,7 +312,26 @@ class Llama:
         if max_gen_len is None:
             max_gen_len = self.model.params.max_seq_len - 1
         prompt_tokens = [self.tokenizer.encode(x, bos=True, eos=False) for x in prompts]
-        generation_tokens, generation_logprobs = self.generate(
+        # generation_tokens, generation_logprobs = self.generate(
+        #     prompt_tokens=prompt_tokens,
+        #     max_gen_len=max_gen_len,
+        #     temperature=temperature,
+        #     top_p=top_p,
+        #     logprobs=logprobs,
+        #     echo=echo,
+        # )
+        # if logprobs:
+        #     return [
+        #         {
+        #             "generation": self.tokenizer.decode(t),
+        #             "tokens": [self.tokenizer.decode(x) for x in t],
+        #             "logprobs": logprobs_i,
+        #         }
+        #         for t, logprobs_i in zip(generation_tokens, generation_logprobs)
+        #     ]
+        # return [{"generation": self.tokenizer.decode(t)} for t in generation_tokens]
+        # [LeSaRDe Change Begins] Track Transformer behaviors
+        generation_tokens, generation_logprobs, l_h_seq = self.generate(
             prompt_tokens=prompt_tokens,
             max_gen_len=max_gen_len,
             temperature=temperature,
@@ -293,6 +339,7 @@ class Llama:
             logprobs=logprobs,
             echo=echo,
         )
+        # [LeSaRDe Change Ends]
         if logprobs:
             return [
                 {
@@ -301,8 +348,8 @@ class Llama:
                     "logprobs": logprobs_i,
                 }
                 for t, logprobs_i in zip(generation_tokens, generation_logprobs)
-            ]
-        return [{"generation": self.tokenizer.decode(t)} for t in generation_tokens]
+            ], l_h_seq
+        return [{"generation": self.tokenizer.decode(t)} for t in generation_tokens], l_h_seq
 
     def chat_completion(
         self,
@@ -311,7 +358,10 @@ class Llama:
         top_p: float = 0.9,
         max_gen_len: Optional[int] = None,
         logprobs: bool = False,
-    ) -> List[ChatPrediction]:
+    # [LeSaRDe Change Begins] Track Transformer behaviors
+    # ) -> List[ChatPrediction]:
+    ) -> Tuple[List[ChatPrediction], List[List[float]]]:
+    # [LeSaRDe Change Ends]
         """
         Generate assistant responses for a list of conversational dialogs using the language generation model.
 
@@ -383,14 +433,47 @@ class Llama:
                 eos=False,
             )
             prompt_tokens.append(dialog_tokens)
-
-        generation_tokens, generation_logprobs = self.generate(
+        # [LeSaRDe Change Begins] Track Transformer behaviors
+        # generation_tokens, generation_logprobs = self.generate(
+        #     prompt_tokens=prompt_tokens,
+        #     max_gen_len=max_gen_len,
+        #     temperature=temperature,
+        #     top_p=top_p,
+        #     logprobs=logprobs,
+        # )
+        # if logprobs:
+        #     return [
+        #         {
+        #             "generation": {
+        #                 "role": "assistant",
+        #                 "content": self.tokenizer.decode(t)
+        #                 if not unsafe
+        #                 else UNSAFE_ERROR,
+        #             },
+        #             "tokens": [self.tokenizer.decode(x) for x in t],
+        #             "logprobs": logprobs_i,
+        #         }
+        #         for t, logprobs_i, unsafe in zip(
+        #             generation_tokens, generation_logprobs, unsafe_requests
+        #         )
+        #     ]
+        # return [
+        #     {
+        #         "generation": {
+        #             "role": "assistant",
+        #             "content": self.tokenizer.decode(t) if not unsafe else UNSAFE_ERROR,
+        #         }
+        #     }
+        #     for t, unsafe in zip(generation_tokens, unsafe_requests)
+        # ]
+        generation_tokens, generation_logprobs, l_h_seq = self.generate(
             prompt_tokens=prompt_tokens,
             max_gen_len=max_gen_len,
             temperature=temperature,
             top_p=top_p,
             logprobs=logprobs,
         )
+        # [LeSaRDe Change Ends]
         if logprobs:
             return [
                 {
@@ -406,7 +489,7 @@ class Llama:
                 for t, logprobs_i, unsafe in zip(
                     generation_tokens, generation_logprobs, unsafe_requests
                 )
-            ]
+            ], l_h_seq
         return [
             {
                 "generation": {
@@ -415,7 +498,7 @@ class Llama:
                 }
             }
             for t, unsafe in zip(generation_tokens, unsafe_requests)
-        ]
+        ], l_h_seq
 
     # [LeSaRDe Change Begins] Address the prompt length issue
     def simple_chat_completion(self,
@@ -425,22 +508,37 @@ class Llama:
                                top_p: float = 0.9,
                                max_gen_len: Optional[int] = None,
                                logprobs: bool = False,
-                               ) -> List[ChatPrediction]:
+                               keep_init_prompt: bool = True
+                               ) -> Tuple[List[ChatPrediction], str, List[List[float]]]:
+        """
+        Always keeps the initial prompt, and tries to keep follow-ups as much as possible.
+        """
+        import logging
+        import numpy as np
+
         if len(dialog) <= 0:
-            print('[simple_chat_completion] dialog is empty.')
-            return None
+            logging.error('[simple_chat_completion] dialog is empty.')
+            return None, None, None
 
         if max_gen_len is None:
             max_gen_len = self.model.params.max_seq_len - 1
         params = self.model.params
         prompt_tokens = []
 
-        sys_prompt_tokens = []
-        if sys_msg is not None:
-            sys_msg = '%s %s %s %s %s' % (B_INST, B_SYS, sys_msg.strip(), E_SYS, E_INST)
-            sys_prompt_tokens = self.tokenizer.encode(sys_msg, bos=True, eos=True)
+        init_msg = dialog[0]
+        if init_msg['role'] != 'user':
+            logging.error('[simple_chat_completion] The initial user prompt is missing.')
+            return None, None, None
 
-        for i in range(len(dialog)-1, -1, -1):
+        start_t = time.time()
+        if sys_msg is not None:
+            init_msg_content = ('%s %s %s %s %s %s'
+                                % (B_INST, B_SYS, sys_msg.strip(), E_SYS, init_msg['content'], E_INST))
+        else:
+            init_msg_content = ('%s %s %s' % (B_INST, init_msg['content'], E_INST))
+        init_prompt_tokens = self.tokenizer.encode(init_msg_content, bos=True, eos=True)
+
+        for i in range(len(dialog)-1, 0, -1):
             msg = dialog[i]
             role = msg['role'].strip()
             content = msg['content'].strip()
@@ -451,13 +549,21 @@ class Llama:
             else:
                 print('[simple_chat_completion] Unsupported role in msg: %s' % msg)
                 tokens = []
-            if len(prompt_tokens) + len(sys_prompt_tokens) + len(tokens) <= params.max_seq_len:
+            if keep_init_prompt:
+                total_len = len(prompt_tokens) + len(init_prompt_tokens) + len(tokens)
+            else:
+                total_len = len(prompt_tokens) + len(tokens)
+            if total_len < params.max_seq_len:
                 prompt_tokens = tokens + prompt_tokens
             else:
                 break
-        prompt_tokens = sys_prompt_tokens + prompt_tokens
+        if keep_init_prompt:
+            prompt_tokens = init_prompt_tokens + prompt_tokens
+        logging.debug('[simple_chat_completion] Prompt: [Elapse: %s, Len: %s]\n'
+                      % (np.round(time.time() - start_t, decimals=4),
+                         len(prompt_tokens)))
 
-        generation_tokens, generation_logprobs = self.generate(
+        generation_tokens, generation_logprobs, l_h_seq = self.generate(
             prompt_tokens=[prompt_tokens],
             max_gen_len=max_gen_len,
             temperature=temperature,
@@ -478,7 +584,7 @@ class Llama:
                 for t, logprobs_i in zip(
                     generation_tokens, generation_logprobs
                 )
-            ]
+            ], self.tokenizer.decode(prompt_tokens), l_h_seq
         return [
             {
                 "generation": {
@@ -487,7 +593,7 @@ class Llama:
                 }
             }
             for t in generation_tokens
-        ]
+        ], self.tokenizer.decode(prompt_tokens), l_h_seq
     # [LeSaRDe Change Ends]
 
 def sample_top_p(probs, p):
